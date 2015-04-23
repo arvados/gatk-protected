@@ -26,4 +26,15 @@ out/
 /atlassian-ide-plugin.xml
 maven-metadata-local.xml
 dependency-reduced-pom.xml
-public/external-example/target/
+public/external-example/target/*
+protected/gatk-package-distribution/target/*
+protected/gatk-queue-extensions-distribution/target/*
+protected/gatk-queue-package-distribution/target/*
+public/gatk-queue-extensions-public/target/*
+public/gatk-tools-public/target/*
+public/gatk-queue/target/*
+protected/gatk-tools-protected/target/*
+public/gatk-engine/target/*
+public/gatk-queue-extensions-generator/target/*
+public/gatk-utils/target/*
+target/*
