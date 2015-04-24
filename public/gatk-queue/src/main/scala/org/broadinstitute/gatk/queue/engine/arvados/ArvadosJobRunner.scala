@@ -29,16 +29,23 @@ import org.broadinstitute.gatk.queue.QException
 import org.broadinstitute.gatk.queue.util.{Logging,Retry}
 import org.broadinstitute.gatk.queue.function.CommandLineFunction
 import org.broadinstitute.gatk.queue.engine.{RunnerStatus, CommandLineJobRunner}
-import java.util.{Date, Collections, HashMap}
+import java.util.{Date, Collections, HashMap, ArrayList}
 import org.arvados.sdk.java.Arvados
+import org.json.simple.JSONArray
+import org.json.simple.JSONObject
+import java.nio.file.{Files, Paths}
+import com.google.api.client.http
+import org.broadinstitute.gatk.utils.runtime.{ProcessSettings, OutputStreamSettings, ProcessController}
+import java.io
+import java.nio.charset.Charset
 
 /**
  * Runs jobs using Arvados.
  */
 class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) extends CommandLineJobRunner with Logging {
   /** Job Id of the currently executing job. */
-  var jobId: String = _
-  override def jobIdString = jobId
+  var jobUuid: String = _
+  override def jobIdString = jobUuid
 
   // Set the display name to < 512 characters of the description
   // NOTE: Not sure if this is configuration specific?
@@ -47,27 +54,67 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
   protected def functionNativeSpec = function.jobNativeArgs.mkString(" ")
 
   def start() {
-    println(function.commandDirectory.getPath)
-    println(function.jobOutputFile.getPath)
-    println(function.commandLine)
-
-    var job_uuid = System.getenv().get("JOB_UUID")
-    var task_uuid = System.getenv().get("TASK_UUID")
-
+    arv.synchronized {
     var body = new HashMap[String, Object]()
-    body.put("job_uuid", job_uuid)
-    body.put("created_by_job_task_uuid", task_uuid)
-    body.put("sequence", 1: java.lang.Integer)
+    body.put("script", "run-command")
+    body.put("script_version", "master")
+    body.put("repository", "arvados")
+
+    var cl = function.commandLine
+    var rx = """(-Djava.io.tmpdir=)(/tmp/crunch-job-task-work/compute\d+\.\d+/output/.queue/tmp)""".r
+    cl = rx.replaceAllIn(cl, "$1\\$(task.tmpdir)")
+
+    rx = """'-o' '(/tmp/crunch-job-task-work/compute\d+\.\d+/output/.queue/scatterGather/[^/]+/[^/]+/)(.*)'""".r
+    cl = rx.replaceAllIn(cl, "'-o' '\\$(task.outdir)/$2'")
+
+    rx = """'-L' '(/tmp/crunch-job-task-work/compute\d+\.\d+/output/.queue/scatterGather/[^/]+/[^/]+/)(.*)'""".r
+
+    cl match { case rx(scatterdir, b) => {
+       // Need to shell out to arv-put to upload scatterdir
+
+    val commandLine = Array("arv-put", "--no-progress", "--portable-data-hash", scatterdir)
+    val stdoutSettings = new OutputStreamSettings
+    val stderrSettings = new OutputStreamSettings
+
+    var temp = java.io.File.createTempFile("PDH", ".tmp");
+
+    stdoutSettings.setOutputFile(temp, true)
+
+    val processSettings = new ProcessSettings(
+      commandLine, false, function.commandDirectory, null,
+      null, stdoutSettings, stderrSettings)
+
+    var controller = ProcessController.getThreadLocal
+    val exitStatus = controller.exec(processSettings).getExitValue
+
+    var pdh = Files.readAllLines(Paths.get(temp.getPath()), Charset.defaultCharset()).get(0)
+    println(pdh)
+
+      }
+    }
+
+    cl = rx.replaceAllIn(cl, "'-L' '/keep/" + "abc+123" + "/$2'")
 
     var parameters = new HashMap[String, Object]()
-    parameters.put("input", "")
-    body.put("parameters", parameters)
+    var cmdLine = new ArrayList[String]
+    cmdLine.add("/bin/sh")
+    cmdLine.add("-c")
+    cmdLine.add(function.commandLine)
+    parameters.put("command", cmdLine)
+    //parameters.put("task.stdout", "output")
 
-    var paramsMap = new HashMap[String, Object]()
-    paramsMap.put("job_tasks", body)
-    var response = arv.call("job_tasks", "create", paramsMap)
+    body.put("script_parameters", parameters)
+
+    var json = new JSONObject(body)
+    var p = new HashMap[String, Object]()
+    p.put("job", json.toString())
+    var response = arv.call("jobs", "create", p)
+
+    jobUuid = response.get("uuid").asInstanceOf[String]
+    println(jobUuid)
 
     updateStatus(RunnerStatus.RUNNING)
+    }
 
   /*
       // Set the current working directory
@@ -116,7 +163,31 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
   }
 
   def updateJobStatus() = {
-      false
+    arv.synchronized {
+      var p = new HashMap[String, Object]()
+      p.put("uuid", jobUuid)
+      var response = arv.call("jobs", "get", p)
+
+      var returnStatus: RunnerStatus.Value = null
+      var state = response.get("state")
+      println(state)
+      state match {
+            case "Queued" => returnStatus = RunnerStatus.RUNNING
+            case "Running" => returnStatus = RunnerStatus.RUNNING
+            case "Complete" => {
+              //Files.createSymbolicLink(Paths.get(function.jobOutputFile.getPath),
+              //  Paths.get("/keep/" + response.get("output") + "/output"))
+
+              returnStatus = RunnerStatus.DONE
+            }
+            case "Failed" => returnStatus = RunnerStatus.FAILED
+            case "Cancelled" => returnStatus = RunnerStatus.FAILED
+      }
+
+      println(returnStatus)
+      updateStatus(returnStatus)
+      true
+    }
   /*
     session.synchronized {
       var returnStatus: RunnerStatus.Value = null
@@ -127,7 +198,6 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
           case Session.QUEUED_ACTIVE => returnStatus = RunnerStatus.RUNNING
           case Session.DONE =>
             val jobInfo: JobInfo = session.wait(jobId, Session.TIMEOUT_NO_WAIT)
-
             // Update jobInfo
             def convertDRMAATime(key: String): Date = {
               val v = jobInfo.getResourceUsage.get(key)
@@ -170,4 +240,14 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
     */
   }
 
+  def tryStop() {
+    try {
+    var p = new HashMap[String, Object]()
+    p.put("uuid", jobUuid)
+    p.put("job", "")
+    var response = arv.call("jobs", "cancel", p)
+    } catch {
+      case e: com.google.api.client.http.HttpResponseException => {}
+    }
+  }
 }

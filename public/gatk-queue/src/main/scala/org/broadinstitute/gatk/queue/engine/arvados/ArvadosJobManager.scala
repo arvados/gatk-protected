@@ -47,4 +47,8 @@ class ArvadosJobManager extends CommandLineJobManager[ArvadosJobRunner] {
     runners.foreach(runner => if (runner.updateJobStatus()) {updatedRunners += runner})
     updatedRunners
   }
+
+  override def tryStop(runners: Set[ArvadosJobRunner]) {
+          runners.foreach(_.tryStop())
+  }
 }
