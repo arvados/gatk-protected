@@ -115,7 +115,6 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
           }
 
           vwdpdh = Files.readAllLines(Paths.get(temp.getPath()), Charset.defaultCharset()).get(0)
-          println(vwdpdh)
         }
         case None => {}
       }
@@ -126,7 +125,7 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
       var cmdLine = new ArrayList[String]
       cmdLine.add("/bin/sh")
       cmdLine.add("-c")
-      cmdLine.add(function.commandLine)
+      cmdLine.add(cl)
       parameters.put("command", cmdLine)
       parameters.put("task.vwd", vwdpdh)
 
@@ -138,7 +137,7 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
       var response = arv.call("jobs", "create", p)
 
       jobUuid = response.get("uuid").asInstanceOf[String]
-      println(jobUuid)
+      println("Queued job $jobUuid")
 
       updateStatus(RunnerStatus.RUNNING)
     }
@@ -152,19 +151,18 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
 
       var returnStatus: RunnerStatus.Value = null
       var state = response.get("state")
-      println(state)
       state match {
         case "Queued" => returnStatus = RunnerStatus.RUNNING
         case "Running" => returnStatus = RunnerStatus.RUNNING
         case "Complete" => {
           Files.createSymbolicLink(Paths.get(outfilePath), Paths.get("/keep/" + response.get("output") + "/" + outfileName))
+          Files.createSymbolicLink(Paths.get(outfilePath + ".idx"), Paths.get("/keep/" + response.get("output") + "/" + outfileName + ".idx"))
           returnStatus = RunnerStatus.DONE
         }
         case "Failed" => returnStatus = RunnerStatus.FAILED
         case "Cancelled" => returnStatus = RunnerStatus.FAILED
       }
 
-      println(returnStatus)
       updateStatus(returnStatus)
       true
     }
