@@ -1,5 +1,9 @@
 /*
-* Copyright (c) 2012 The Broad Institute
+* Queue support for dispatching jobs to Arvados.
+*
+* Copyright (c) 2015 Curoverse, Inc.
+*
+* Based on code Copyright (c) 2012 The Broad Institute
 *
 * Permission is hereby granted, free of charge, to any person
 * obtaining a copy of this software and associated documentation
@@ -42,102 +46,156 @@ import java.nio.charset.Charset
 /**
  * Runs jobs using Arvados.
  */
-class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) extends CommandLineJobRunner with Logging {
+class ArvadosJobRunner(val arv: Arvados,
+                       val jobs: scala.collection.mutable.Map[String, String],
+                       val function: CommandLineFunction)
+extends CommandLineJobRunner with Logging {
+
   /** Job Id of the currently executing job. */
   var jobUuid: String = _
   override def jobIdString = jobUuid
   var outfilePath: String = ""
   var outfileName: String = ""
-
-  // Set the display name to < 512 characters of the description
-  // NOTE: Not sure if this is configuration specific?
-  protected val jobNameLength = 500
-  protected val jobNameFilter = """[^A-Za-z0-9_]"""
-  protected def functionNativeSpec = function.jobNativeArgs.mkString(" ")
+  var workdir: String = ""
 
   def start() {
     arv.synchronized {
-      var body = new HashMap[String, Object]()
+      val body = new HashMap[String, Object]()
       body.put("script", "run-command")
       body.put("script_version", "master")
       body.put("repository", "arvados")
 
-      var runtime = new HashMap[String, Object]()
+      val runtime = new HashMap[String, Object]()
       runtime.put("docker_image", "arvados/jobs-java-bwa-samtools")
       runtime.put("max_tasks_per_node", 1:java.lang.Integer)
       body.put("runtime_constraints", runtime)
 
       var cl = function.commandLine
 
-      // Adjust tmpdir
-      var rx = """'-Djava.io.tmpdir=([^']+)'""".r
-      cl = rx.replaceFirstIn(cl, "'-Djava.io.tmpdir=\\$(task.tmpdir)'")
-
-      // Adjust thread count
-      rx = """'-nct' '(\d+)'""".r
-      cl = rx.replaceFirstIn(cl, "'-nct' '\\$(node.cores)'")
-
-      // Capture and adjust output path
-      rx = """'-o' '([^']+/\.queue/scatterGather/[^/]+/[^/]+/([^']+))'""".r
-      rx.findFirstMatchIn(cl) match {
-        case Some(m) => {
-          outfilePath = m.group(1)
-          outfileName = m.group(1)
-        }
-        case None => {}
+      {
+        // Adjust tmpdir
+        val rx = """'-Djava.io.tmpdir=([^']+)'""".r
+        cl = rx.replaceFirstIn(cl, "'-Djava.io.tmpdir=\\$(task.tmpdir)'")
       }
-      cl = rx.replaceFirstIn(cl, "'-o' '$2'")
 
-      // Capture and adjust scatter intervals
-      rx = """'-L' '([^']+/\.queue/scatterGather/[^/]+/[^/]+/)([^']+)'""".r
+      {
+        // Adjust thread count
+        val rx = """'-nct' '(\d+)'""".r
+        cl = rx.replaceFirstIn(cl, "'-nct' '\\$(node.cores)'")
+      }
 
-      var vwdpdh = ""
-      rx.findFirstMatchIn(cl) match {
-        case Some(m) => {
-          // Need to shell out to arv-put to upload scatterdir
-          val commandLine = Array("arv-put", "--no-progress", "--portable-data-hash", m.group(1))
-          val stdoutSettings = new OutputStreamSettings
-          val stderrSettings = new OutputStreamSettings
+      val hap = """.*'org.broadinstitute.gatk.engine.CommandLineGATK'.*'-T' 'HaplotypeCaller'.*""".r
+      val cat = """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
 
-          var temp = java.io.File.createTempFile("PDH", ".tmp");
+      var vwdpdh: Option[String] = None
 
-          stdoutSettings.setOutputFile(temp, true)
+      cl match {
+        case hap() => {
+          // HaplotypeCaller support
 
-          val processSettings = new ProcessSettings(
-            commandLine, false, function.commandDirectory, null,
-            null, stdoutSettings, stderrSettings)
-
-          var controller = ProcessController.getThreadLocal
-          val exitStatus = controller.exec(processSettings).getExitValue
-          if (exitStatus != 0) {
-            updateStatus(RunnerStatus.FAILED)
-            return
+          {
+            // Capture and adjust output path
+            val rx = """'-o' '([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
+            rx.findFirstMatchIn(cl) match {
+              case Some(m) => {
+                outfilePath = m.group(1)
+                workdir = m.group(2)
+                outfileName = m.group(3)
+              }
+              case None => {}
+            }
+            cl = rx.replaceFirstIn(cl, "'-o' '$3'")
           }
 
-          vwdpdh = Files.readAllLines(Paths.get(temp.getPath()), Charset.defaultCharset()).get(0)
+          {
+            // Capture and adjust scatter intervals
+            val rx = """'-L' '([^']+/\.queue/scatterGather/[^/]+/[^/]+/)([^']+)'""".r
+
+            rx.findFirstMatchIn(cl) match {
+              case Some(m) => {
+                // Need to shell out to arv-put to upload scatterdir
+                val commandLine = Array("arv-put", "--no-progress", "--portable-data-hash", m.group(1))
+                val stdoutSettings = new OutputStreamSettings
+                val stderrSettings = new OutputStreamSettings
+
+                val temp = java.io.File.createTempFile("PDH", ".tmp");
+
+                stdoutSettings.setOutputFile(temp, true)
+
+                val processSettings = new ProcessSettings(
+                  commandLine, false, function.commandDirectory, null,
+                  null, stdoutSettings, stderrSettings)
+
+                val controller = ProcessController.getThreadLocal
+                val exitStatus = controller.exec(processSettings).getExitValue
+                if (exitStatus != 0) {
+                  updateStatus(RunnerStatus.FAILED)
+                  return
+                }
+
+                vwdpdh = Some(Files.readAllLines(Paths.get(temp.getPath()), Charset.defaultCharset()).get(0))
+
+                temp.delete()
+              }
+              case None => {}
+            }
+
+            cl = rx.replaceFirstIn(cl, "'-L' '$2'")
+          }
         }
-        case None => {}
+        case cat() => {
+          // CatVariants support
+
+          {
+            // Capture and adjust output path
+            val rx = """'-out' '([^']+/([^/']+))'""".r
+            rx.findFirstMatchIn(cl) match {
+              case Some(m) => {
+                outfilePath = m.group(1)
+                workdir = ""
+                outfileName = m.group(2)
+              }
+              case None => {}
+            }
+            cl = rx.replaceFirstIn(cl, "'-out' '$2'")
+          }
+          {
+            val rx = """'-V' '[^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)'""".r
+            for (rx(work, file) <- rx findAllIn cl) {
+              jobs.get(work) match {
+                case Some(d) => {
+                  cl = rx.replaceFirstIn(cl, "'-V' '/keep/" + d + "/" + file + "'")
+                }
+                case None => {}
+              }
+            }
+          }
+        }
+        case _ => {
+          throw new QException("Did not recognize tool command line, only supports HaplotypeCaller and CatVariants.")
+        }
       }
 
-      cl = rx.replaceFirstIn(cl, "'-L' '$2'")
-
-      var parameters = new HashMap[String, Object]()
-      var cmdLine = new ArrayList[String]
+      val parameters = new HashMap[String, Object]()
+      val cmdLine = new ArrayList[String]
       cmdLine.add("/bin/sh")
       cmdLine.add("-c")
       cmdLine.add(cl)
       parameters.put("command", cmdLine)
-      parameters.put("task.vwd", vwdpdh)
+      vwdpdh match {
+        case Some(vwd) => parameters.put("task.vwd", vwd)
+        case None => {}
+      }
 
       body.put("script_parameters", parameters)
 
-      var json = new JSONObject(body)
-      var p = new HashMap[String, Object]()
+      val json = new JSONObject(body)
+      val p = new HashMap[String, Object]()
       p.put("job", json.toString())
-      var response = arv.call("jobs", "create", p)
+      val response = arv.call("jobs", "create", p)
 
       jobUuid = response.get("uuid").asInstanceOf[String]
-      println("Queued job $jobUuid")
+      println("Queued job " + jobUuid)
 
       updateStatus(RunnerStatus.RUNNING)
     }
@@ -145,35 +203,42 @@ class ArvadosJobRunner(val arv: Arvados, val function: CommandLineFunction) exte
 
   def updateJobStatus() = {
     arv.synchronized {
-      var p = new HashMap[String, Object]()
+      val p = new HashMap[String, Object]()
       p.put("uuid", jobUuid)
-      var response = arv.call("jobs", "get", p)
+      val response = arv.call("jobs", "get", p)
 
       var returnStatus: RunnerStatus.Value = null
-      var state = response.get("state")
+      val state = response.get("state")
+
       state match {
         case "Queued" => returnStatus = RunnerStatus.RUNNING
         case "Running" => returnStatus = RunnerStatus.RUNNING
         case "Complete" => {
-          Files.createSymbolicLink(Paths.get(outfilePath), Paths.get("/keep/" + response.get("output") + "/" + outfileName))
+          jobs += (workdir -> response.get("output").asInstanceOf[String])
+
           Files.createSymbolicLink(Paths.get(outfilePath + ".idx"), Paths.get("/keep/" + response.get("output") + "/" + outfileName + ".idx"))
+          Files.createSymbolicLink(Paths.get(function.jobOutputFile.getPath), Paths.get("/keep/" + response.get("log") + "/" + response.get("uuid") + ".log.txt"))
+          Files.createSymbolicLink(Paths.get(outfilePath), Paths.get("/keep/" + response.get("output") + "/" + outfileName))
           returnStatus = RunnerStatus.DONE
+
+          println("Job " + jobUuid + " completed")
         }
         case "Failed" => returnStatus = RunnerStatus.FAILED
         case "Cancelled" => returnStatus = RunnerStatus.FAILED
       }
 
       updateStatus(returnStatus)
+
       true
     }
   }
 
   def tryStop() {
     try {
-      var p = new HashMap[String, Object]()
+      val p = new HashMap[String, Object]()
       p.put("uuid", jobUuid)
       p.put("job", "")
-      var response = arv.call("jobs", "cancel", p)
+      val response = arv.call("jobs", "cancel", p)
     } catch {
       case e: com.google.api.client.http.HttpResponseException => {}
     }

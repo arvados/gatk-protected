@@ -1,5 +1,9 @@
 /*
-* Copyright (c) 2012 The Broad Institute
+* Queue support for dispatching jobs to Arvados.
+*
+* Copyright (c) 2015 Curoverse, Inc.
+*
+* Based on code Copyright (c) 2012 The Broad Institute
 *
 * Permission is hereby granted, free of charge, to any person
 * obtaining a copy of this software and associated documentation
@@ -34,13 +38,14 @@ import org.arvados.sdk.java.Arvados
  */
 class ArvadosJobManager extends CommandLineJobManager[ArvadosJobRunner] {
   protected var arv: Arvados = _
+  protected var jobs = scala.collection.mutable.HashMap.empty[String,String]
 
   override def init() {
     arv = new Arvados("arvados", "v1")
   }
 
   def runnerType = classOf[ArvadosJobRunner]
-  def create(function: CommandLineFunction) = new ArvadosJobRunner(arv, function)
+  def create(function: CommandLineFunction) = new ArvadosJobRunner(arv, jobs, function)
 
   override def updateStatus(runners: Set[ArvadosJobRunner]) = {
     var updatedRunners = Set.empty[ArvadosJobRunner]
@@ -49,6 +54,6 @@ class ArvadosJobManager extends CommandLineJobManager[ArvadosJobRunner] {
   }
 
   override def tryStop(runners: Set[ArvadosJobRunner]) {
-          runners.foreach(_.tryStop())
+    runners.foreach(_.tryStop())
   }
 }
