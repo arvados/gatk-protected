@@ -33,7 +33,7 @@ import org.broadinstitute.gatk.queue.QException
 import org.broadinstitute.gatk.queue.util.{Logging,Retry}
 import org.broadinstitute.gatk.queue.function.CommandLineFunction
 import org.broadinstitute.gatk.queue.engine.{RunnerStatus, CommandLineJobRunner}
-import java.util.{Date, Collections, HashMap, ArrayList}
+import java.util.{Date, Collections, HashMap, ArrayList, Map}
 import org.arvados.sdk.java.Arvados
 import org.json.simple.JSONArray
 import org.json.simple.JSONObject
@@ -42,6 +42,7 @@ import com.google.api.client.http
 import org.broadinstitute.gatk.utils.runtime.{ProcessSettings, OutputStreamSettings, ProcessController}
 import java.io
 import java.nio.charset.Charset
+import java.io.PrintWriter
 
 /**
  * Runs jobs using Arvados.
@@ -192,12 +193,31 @@ extends CommandLineJobRunner with Logging {
       val json = new JSONObject(body)
       val p = new HashMap[String, Object]()
       p.put("job", json.toString())
-      val response = arv.call("jobs", "create", p)
+      p.put("find_or_create", "true")
+      var response: Option[java.util.Map[_, _]] = None
 
-      jobUuid = response.get("uuid").asInstanceOf[String]
-      println("Queued job " + jobUuid)
+      var retry = 3
+      while (retry > 0) {
+        try {
+          response = Some(arv.call("jobs", "create", p))
+          retry = 0
+        } catch {
+          case e: java.net.SocketTimeoutException => {
+            retry -= 1
+          }
+        }
+      }
 
-      updateStatus(RunnerStatus.RUNNING)
+      response match {
+        case Some(r) => {
+          jobUuid = r.get("uuid").asInstanceOf[String]
+          println("Queued job " + jobUuid)
+          updateStatus(RunnerStatus.RUNNING)
+        }
+        case None => {
+          throw new QException("Job creation failed.")
+        }
+      }
     }
   }
 
@@ -217,7 +237,11 @@ extends CommandLineJobRunner with Logging {
           jobs += (workdir -> response.get("output").asInstanceOf[String])
 
           Files.createSymbolicLink(Paths.get(outfilePath + ".idx"), Paths.get("/keep/" + response.get("output") + "/" + outfileName + ".idx"))
-          Files.createSymbolicLink(Paths.get(function.jobOutputFile.getPath), Paths.get("/keep/" + response.get("log") + "/" + response.get("uuid") + ".log.txt"))
+
+          val writer = new PrintWriter(function.jobOutputFile.getPath, "UTF-8")
+          writer.println("Job log for " + jobUuid + " in " + response.get("log") + "/" + response.get("uuid") + ".log.txt")
+          writer.close()
+
           Files.createSymbolicLink(Paths.get(outfilePath), Paths.get("/keep/" + response.get("output") + "/" + outfileName))
           returnStatus = RunnerStatus.DONE
 
