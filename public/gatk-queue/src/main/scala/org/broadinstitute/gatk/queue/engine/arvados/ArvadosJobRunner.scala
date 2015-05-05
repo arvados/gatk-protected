@@ -61,13 +61,24 @@ extends CommandLineJobRunner with Logging {
 
   def start() {
     arv.synchronized {
+      val queueJobUuid = System.getenv().get("JOB_UUID");
+      var p = new HashMap[String, Object]()
+      p.put("uuid", queueJobUuid)
+      val jobRecord = arv.call("jobs", "get", p)
+
       val body = new HashMap[String, Object]()
       body.put("script", "run-command")
-      body.put("script_version", "master")
-      body.put("repository", "arvados")
+      body.put("script_version", jobRecord.get("script_version"))
+      body.put("repository", jobRecord.get("repository"))
 
       val runtime = new HashMap[String, Object]()
-      runtime.put("docker_image", "arvados/jobs-java-bwa-samtools")
+      val rc = jobRecord.get("runtime_constraints").asInstanceOf[Map[String,Object]]
+      if (rc.containsKey("docker_image")) {
+        runtime.put("docker_image", rc.get("docker_image"))
+      }
+      if (rc.containsKey("arvados_sdk_version")) {
+        runtime.put("arvados_sdk_version", rc.get("arvados_sdk_version"))
+      }
       runtime.put("max_tasks_per_node", 1:java.lang.Integer)
       body.put("runtime_constraints", runtime)
 
@@ -191,7 +202,7 @@ extends CommandLineJobRunner with Logging {
       body.put("script_parameters", parameters)
 
       val json = new JSONObject(body)
-      val p = new HashMap[String, Object]()
+      p = new HashMap[String, Object]()
       p.put("job", json.toString())
       p.put("find_or_create", "true")
       var response: Option[java.util.Map[_, _]] = None
