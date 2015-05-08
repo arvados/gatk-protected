@@ -59,12 +59,133 @@ extends CommandLineJobRunner with Logging {
   var outfileName: String = ""
   var workdir: String = ""
 
+  def adjustOutput(cl: String) = {
+    // Capture and adjust output path
+    val rx = """'-o' '([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
+    rx.findFirstMatchIn(cl) match {
+      case Some(m) => {
+        outfilePath = m.group(1)
+        workdir = m.group(2)
+        outfileName = m.group(3)
+        rx.replaceFirstIn(cl, "'-o' '$3'")
+      }
+      case None => cl
+    }
+  }
+
+  def arvPut(src: String) = {
+    // Need to shell out to arv-put to upload scatterdir
+    val commandLine = Array("arv-put", "--no-progress", "--portable-data-hash", src)
+    val stdoutSettings = new OutputStreamSettings
+    val stderrSettings = new OutputStreamSettings
+
+    val temp = java.io.File.createTempFile("PDH", ".tmp");
+
+    stdoutSettings.setOutputFile(temp, true)
+
+    val processSettings = new ProcessSettings(
+      commandLine, false, function.commandDirectory, null,
+      null, stdoutSettings, stderrSettings)
+
+    val controller = ProcessController.getThreadLocal
+    val exitStatus = controller.exec(processSettings).getExitValue
+    if (exitStatus != 0) {
+      updateStatus(RunnerStatus.FAILED)
+      temp.delete()
+      throw new QException("arv-put '" + src + "' failed")
+    } else {
+      val pdh = Files.readAllLines(Paths.get(temp.getPath()), Charset.defaultCharset()).get(0)
+      temp.delete()
+      pdh
+    }
+  }
+
+  def adjustScatter(cl: String) = {
+    // Capture and adjust scatter intervals
+    val rx = """'-L' '([^']+/\.queue/scatterGather/[^/]+/[^/]+/)([^']+)'""".r
+    rx.findFirstMatchIn(cl) match {
+      case Some(m) => {
+        // Need to shell out to arv-put to upload scatterdir
+        (rx.replaceFirstIn(cl, "'-L' '$2'"), Some(arvPut(m.group(1))))
+      }
+      case None => (cl, None)
+    }
+  }
+
+  def adjustTargetIntervals(cl: String) = {
+    // Capture and adjust scatter intervals
+    val rx = """'-targetIntervals' '([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
+    rx.findFirstMatchIn(cl) match {
+      case Some(m) => {
+        // Need to shell out to arv-put to upload scatterdir
+        val pdh = arvPut(m.group(1))
+        rx.replaceFirstIn(cl, "'-targetIntervals' '/keep/" + pdh + "/$3'")
+      }
+      case None => cl
+    }
+  }
+
+  def adjustCatVariantsOutput(cl: String) = {
+    // Capture and adjust output path
+    val rx = """'-out' '([^']+/([^/']+))'""".r
+    rx.findFirstMatchIn(cl) match {
+      case Some(m) => {
+        outfilePath = m.group(1)
+        workdir = ""
+        outfileName = m.group(2)
+        rx.replaceFirstIn(cl, "'-out' '$2'")
+      }
+      case None => cl
+    }
+  }
+
+  def adjustCatVcf(cl: String) = {
+    val rx = """'-V' '[^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)'""".r
+    var cl2 = cl
+    for (rx(work, file) <- rx findAllIn cl) {
+      jobs.get(work) match {
+        case Some(d) => {
+          cl2 = rx.replaceFirstIn(cl2, "'-V' '/keep/" + d + "/" + file + "'")
+        }
+        case None => { }
+      }
+    }
+    cl2
+  }
+
+  def adjustMergeSamInput(cl: String) = {
+    val rx = """'INPUT=[^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)'""".r
+    var cl2 = cl
+    for (rx(work, file) <- rx findAllIn cl) {
+      jobs.get(work) match {
+        case Some(d) => {
+          cl2 = rx.replaceFirstIn(cl2, "'INPUT=/keep/" + d + "/" + file + "'")
+        }
+        case None => { }
+      }
+    }
+    cl2
+  }
+
+  def adjustMergeSamOutput(cl: String) = {
+    val rx = """'OUTPUT=([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
+    rx.findFirstMatchIn(cl) match {
+      case Some(m) => {
+        outfilePath = m.group(1)
+        workdir = m.group(2)
+        outfileName = m.group(3)
+        rx.replaceFirstIn(cl, "'OUTPUT=$3'")
+      }
+      case None => cl
+    }
+  }
+
   def start() {
     arv.synchronized {
       val queueJobUuid = System.getenv().get("JOB_UUID");
       var p = new HashMap[String, Object]()
       p.put("uuid", queueJobUuid)
-      val jobRecord = arv.call("jobs", "get", p)
+      val jobRecord = arv.call("jobs", "get", p).asInstanceOf[Map[String,Object]]
 
       val body = new HashMap[String, Object]()
       body.put("script", "run-command")
@@ -89,102 +210,51 @@ extends CommandLineJobRunner with Logging {
         val rx = """'-Djava.io.tmpdir=([^']+)'""".r
         cl = rx.replaceFirstIn(cl, "'-Djava.io.tmpdir=\\$(task.tmpdir)'")
       }
+      {
+        // Adjust tmpdir
+        val rx = """'TMP_DIR=([^']+)'""".r
+        cl = rx.replaceFirstIn(cl, "'TMP_DIR=\\$(task.tmpdir)'")
+      }
 
       {
         // Adjust thread count
-        val rx = """'-nct' '(\d+)'""".r
-        cl = rx.replaceFirstIn(cl, "'-nct' '\\$(node.cores)'")
+        val rx = """'(-nc?t)' '(\d+)'""".r
+        cl = rx.replaceFirstIn(cl, "'$1' '\\$(node.cores)'")
       }
 
-      val hap = """.*'org.broadinstitute.gatk.engine.CommandLineGATK'.*'-T' 'HaplotypeCaller'.*""".r
-      val cat = """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
+      val hap =        """.*'org.broadinstitute.gatk.engine.CommandLineGATK'.*'-T' '(HaplotypeCaller|RealignerTargetCreator)'.*""".r
+      val indel =      """.*'org.broadinstitute.gatk.engine.CommandLineGATK'.*'-T' '(IndelRealigner)'.*""".r
+      val cat =        """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
+      val mergesam =   """.*'picard.sam.MergeSamFiles'.*""".r
 
       var vwdpdh: Option[String] = None
 
       cl match {
         case hap() => {
-          // HaplotypeCaller support
-
-          {
-            // Capture and adjust output path
-            val rx = """'-o' '([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
-            rx.findFirstMatchIn(cl) match {
-              case Some(m) => {
-                outfilePath = m.group(1)
-                workdir = m.group(2)
-                outfileName = m.group(3)
-              }
-              case None => {}
-            }
-            cl = rx.replaceFirstIn(cl, "'-o' '$3'")
-          }
-
-          {
-            // Capture and adjust scatter intervals
-            val rx = """'-L' '([^']+/\.queue/scatterGather/[^/]+/[^/]+/)([^']+)'""".r
-
-            rx.findFirstMatchIn(cl) match {
-              case Some(m) => {
-                // Need to shell out to arv-put to upload scatterdir
-                val commandLine = Array("arv-put", "--no-progress", "--portable-data-hash", m.group(1))
-                val stdoutSettings = new OutputStreamSettings
-                val stderrSettings = new OutputStreamSettings
-
-                val temp = java.io.File.createTempFile("PDH", ".tmp");
-
-                stdoutSettings.setOutputFile(temp, true)
-
-                val processSettings = new ProcessSettings(
-                  commandLine, false, function.commandDirectory, null,
-                  null, stdoutSettings, stderrSettings)
-
-                val controller = ProcessController.getThreadLocal
-                val exitStatus = controller.exec(processSettings).getExitValue
-                if (exitStatus != 0) {
-                  updateStatus(RunnerStatus.FAILED)
-                  return
-                }
-
-                vwdpdh = Some(Files.readAllLines(Paths.get(temp.getPath()), Charset.defaultCharset()).get(0))
-
-                temp.delete()
-              }
-              case None => {}
-            }
-
-            cl = rx.replaceFirstIn(cl, "'-L' '$2'")
-          }
+          // HaplotypeCaller and RealignerTargetCreator support
+          cl = adjustOutput(cl)
+          var (cl2, vwdpdh2) = adjustScatter(cl)
+          cl = cl2
+          vwdpdh = vwdpdh2
+        }
+        case indel() => {
+          cl = adjustOutput(cl)
+          cl = adjustTargetIntervals(cl)
+          var (cl2, vwdpdh2) = adjustScatter(cl)
+          cl = cl2
+          vwdpdh = vwdpdh2
         }
         case cat() => {
           // CatVariants support
-
-          {
-            // Capture and adjust output path
-            val rx = """'-out' '([^']+/([^/']+))'""".r
-            rx.findFirstMatchIn(cl) match {
-              case Some(m) => {
-                outfilePath = m.group(1)
-                workdir = ""
-                outfileName = m.group(2)
-              }
-              case None => {}
-            }
-            cl = rx.replaceFirstIn(cl, "'-out' '$2'")
-          }
-          {
-            val rx = """'-V' '[^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)'""".r
-            for (rx(work, file) <- rx findAllIn cl) {
-              jobs.get(work) match {
-                case Some(d) => {
-                  cl = rx.replaceFirstIn(cl, "'-V' '/keep/" + d + "/" + file + "'")
-                }
-                case None => {}
-              }
-            }
-          }
+          cl = adjustCatVariantsOutput(cl)
+          cl = adjustCatVcf(cl)
+        }
+        case mergesam() => {
+          cl = adjustMergeSamInput(cl)
+          cl = adjustMergeSamOutput(cl)
         }
         case _ => {
-          throw new QException("Did not recognize tool command line, only supports HaplotypeCaller and CatVariants.")
+          throw new QException("Did not recognize tool command line, supports HaplotypeCaller, RealignerTargetCreator, IndelRealigner, CatVariants, MergeSamFiles.")
         }
       }
 
@@ -232,6 +302,19 @@ extends CommandLineJobRunner with Logging {
     }
   }
 
+  def linkIndex(fileext:String, suffix: String, joboutput: String) {
+    val rx = """(.*/([^/]+))""" + fileext
+    outfilePath match {
+      case rx.r(d1, d2) => {
+        val src = Paths.get("/keep/" + joboutput + "/" + d2 + suffix)
+        if (Files.exists(src)) {
+          Files.createSymbolicLink(Paths.get(d1 + suffix), src)
+        }
+      }
+      case _ => {}
+    }
+  }
+
   def updateJobStatus() = {
     arv.synchronized {
       val p = new HashMap[String, Object]()
@@ -247,13 +330,15 @@ extends CommandLineJobRunner with Logging {
         case "Complete" => {
           jobs += (workdir -> response.get("output").asInstanceOf[String])
 
-          Files.createSymbolicLink(Paths.get(outfilePath + ".idx"), Paths.get("/keep/" + response.get("output") + "/" + outfileName + ".idx"))
-
           val writer = new PrintWriter(function.jobOutputFile.getPath, "UTF-8")
           writer.println("Job log for " + jobUuid + " in " + response.get("log") + "/" + response.get("uuid") + ".log.txt")
           writer.close()
 
           Files.createSymbolicLink(Paths.get(outfilePath), Paths.get("/keep/" + response.get("output") + "/" + outfileName))
+
+          linkIndex(".vcf", ".vcf.idx", response.get("output").asInstanceOf[String])
+          linkIndex(".bam", ".bai", response.get("output").asInstanceOf[String])
+
           returnStatus = RunnerStatus.DONE
 
           println("Job " + jobUuid + " completed")
