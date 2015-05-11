@@ -114,12 +114,12 @@ extends CommandLineJobRunner with Logging {
 
   def adjustTargetIntervals(cl: String) = {
     // Capture and adjust scatter intervals
-    val rx = """'-targetIntervals' '([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
+    val rx = """'-targetIntervals' '([^']+/([^/']+))'""".r
     rx.findFirstMatchIn(cl) match {
       case Some(m) => {
         // Need to shell out to arv-put to upload scatterdir
         val pdh = arvPut(m.group(1))
-        rx.replaceFirstIn(cl, "'-targetIntervals' '/keep/" + pdh + "/$3'")
+        rx.replaceFirstIn(cl, "'-targetIntervals' '/keep/" + pdh + "/$2'")
       }
       case None => cl
     }
@@ -168,13 +168,13 @@ extends CommandLineJobRunner with Logging {
   }
 
   def adjustMergeSamOutput(cl: String) = {
-    val rx = """'OUTPUT=([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
+    val rx = """'OUTPUT=([^']+/([^/']+))'""".r
     rx.findFirstMatchIn(cl) match {
       case Some(m) => {
         outfilePath = m.group(1)
         workdir = m.group(2)
-        outfileName = m.group(3)
-        rx.replaceFirstIn(cl, "'OUTPUT=$3'")
+        outfileName = m.group(2)
+        rx.replaceFirstIn(cl, "'OUTPUT=$2'")
       }
       case None => cl
     }
@@ -222,15 +222,15 @@ extends CommandLineJobRunner with Logging {
         cl = rx.replaceFirstIn(cl, "'$1' '\\$(node.cores)'")
       }
 
-      val hap =        """.*'org.broadinstitute.gatk.engine.CommandLineGATK'.*'-T' '(HaplotypeCaller|RealignerTargetCreator)'.*""".r
-      val indel =      """.*'org.broadinstitute.gatk.engine.CommandLineGATK'.*'-T' '(IndelRealigner)'.*""".r
+      val hap =        """.*'-T' '(HaplotypeCaller|RealignerTargetCreator)'.*""".r
+      val indel =      """.*'-T' 'IndelRealigner'.*""".r
       val cat =        """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
       val mergesam =   """.*'picard.sam.MergeSamFiles'.*""".r
 
       var vwdpdh: Option[String] = None
 
       cl match {
-        case hap() => {
+        case hap(_) => {
           // HaplotypeCaller and RealignerTargetCreator support
           cl = adjustOutput(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
