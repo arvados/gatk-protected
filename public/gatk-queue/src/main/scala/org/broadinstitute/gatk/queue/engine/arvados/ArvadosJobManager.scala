@@ -31,7 +31,7 @@ package org.broadinstitute.gatk.queue.engine.arvados
 
 import org.broadinstitute.gatk.queue.function.CommandLineFunction
 import org.broadinstitute.gatk.queue.engine.CommandLineJobManager
-import org.arvados.sdk.java.Arvados
+import org.arvados.sdk.Arvados
 
 /**
  * Runs jobs using Arvados

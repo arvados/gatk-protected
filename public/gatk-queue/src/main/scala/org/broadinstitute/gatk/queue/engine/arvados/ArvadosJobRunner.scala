@@ -34,7 +34,7 @@ import org.broadinstitute.gatk.queue.util.{Logging,Retry}
 import org.broadinstitute.gatk.queue.function.CommandLineFunction
 import org.broadinstitute.gatk.queue.engine.{RunnerStatus, CommandLineJobRunner}
 import java.util.{Date, Collections, HashMap, ArrayList, Map}
-import org.arvados.sdk.java.Arvados
+import org.arvados.sdk.Arvados
 import org.json.simple.JSONArray
 import org.json.simple.JSONObject
 import java.nio.file.{Files, Paths}
