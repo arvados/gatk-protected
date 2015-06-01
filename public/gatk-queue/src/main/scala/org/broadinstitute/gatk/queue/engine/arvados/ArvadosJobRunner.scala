@@ -274,7 +274,12 @@ extends CommandLineJobRunner with Logging {
       val json = new JSONObject(body)
       p = new HashMap[String, Object]()
       p.put("job", json.toString())
-      p.put("find_or_create", "true")
+
+      if (function.jobNativeArgs contains "--no-reuse") {
+        p.put("find_or_create", "false")
+      } else {
+        p.put("find_or_create", "true")
+      }
       var response: Option[java.util.Map[_, _]] = None
 
       var retry = 3
@@ -328,6 +333,8 @@ extends CommandLineJobRunner with Logging {
         case "Queued" => returnStatus = RunnerStatus.RUNNING
         case "Running" => returnStatus = RunnerStatus.RUNNING
         case "Complete" => {
+          println("Job " + jobUuid + " " + state)
+
           jobs += (workdir -> response.get("output").asInstanceOf[String])
 
           val writer = new PrintWriter(function.jobOutputFile.getPath, "UTF-8")
@@ -340,11 +347,16 @@ extends CommandLineJobRunner with Logging {
           linkIndex(".bam", ".bai", response.get("output").asInstanceOf[String])
 
           returnStatus = RunnerStatus.DONE
-
-          println("Job " + jobUuid + " completed")
         }
-        case "Failed" => returnStatus = RunnerStatus.FAILED
-        case "Cancelled" => returnStatus = RunnerStatus.FAILED
+        case "Failed" | "Cancelled" => {
+          println("Job " + jobUuid + " " + state)
+
+          val writer = new PrintWriter(function.jobOutputFile.getPath, "UTF-8")
+          writer.println("Job log for " + jobUuid + " in " + response.get("log") + "/" + response.get("uuid") + ".log.txt")
+          writer.close()
+
+          returnStatus = RunnerStatus.FAILED
+        }
       }
 
       updateStatus(returnStatus)
