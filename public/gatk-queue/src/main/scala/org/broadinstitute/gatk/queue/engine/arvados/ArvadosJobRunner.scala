@@ -226,6 +226,7 @@ extends CommandLineJobRunner with Logging {
       val indel =      """.*'-T' 'IndelRealigner'.*""".r
       val cat =        """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
       val mergesam =   """.*'picard.sam.MergeSamFiles'.*""".r
+      val genotype =   """.*'-T' 'GenotypeGVCFs'.*""".r
 
       var vwdpdh: Option[String] = None
 
@@ -253,8 +254,14 @@ extends CommandLineJobRunner with Logging {
           cl = adjustMergeSamInput(cl)
           cl = adjustMergeSamOutput(cl)
         }
+        case genotype() => {
+          cl = adjustOutput(cl)
+          var (cl2, vwdpdh2) = adjustScatter(cl)
+          cl = cl2
+          vwdpdh = vwdpdh2
+        }
         case _ => {
-          throw new QException("Did not recognize tool command line, supports HaplotypeCaller, RealignerTargetCreator, IndelRealigner, CatVariants, MergeSamFiles.")
+          throw new QException("Did not recognize tool command line, supports HaplotypeCaller, RealignerTargetCreator, IndelRealigner, GenotypeGVCFs, CatVariants, MergeSamFiles.")
         }
       }
 
@@ -275,9 +282,11 @@ extends CommandLineJobRunner with Logging {
       p = new HashMap[String, Object]()
       p.put("job", json.toString())
 
-      if (function.jobNativeArgs contains "--no-reuse") {
+      if (function.jobNativeArgs contains "no-reuse") {
+        println("Submitting new job")
         p.put("find_or_create", "false")
       } else {
+        println("Will reuse past job if available")
         p.put("find_or_create", "true")
       }
       var response: Option[java.util.Map[_, _]] = None
