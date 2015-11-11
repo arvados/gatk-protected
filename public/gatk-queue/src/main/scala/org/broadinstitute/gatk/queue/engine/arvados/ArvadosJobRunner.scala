@@ -153,6 +153,18 @@ extends CommandLineJobRunner with Logging {
     cl2
   }
 
+  def adjustGenotypeGVCF(cl: String) = {
+    val rx = """'-V' '([^']+)'""".r
+    rx.findFirstMatchIn(cl) match {
+      case Some(m) => {
+          var dpath = Paths.get(m.group(1))
+          var target = Files.readSymbolicLink(dpath)
+          rx.replaceFirstIn(cl, "'-V' '" + target + "'")
+        }
+        case None => cl
+    }
+  }
+
   def adjustMergeSamInput(cl: String) = {
     val rx = """'INPUT=[^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)'""".r
     var cl2 = cl
@@ -256,6 +268,7 @@ extends CommandLineJobRunner with Logging {
         }
         case genotype() => {
           cl = adjustOutput(cl)
+          cl = adjustGenotypeGVCF(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
           vwdpdh = vwdpdh2
