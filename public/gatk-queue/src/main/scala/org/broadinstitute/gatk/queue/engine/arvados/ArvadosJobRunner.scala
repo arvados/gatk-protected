@@ -234,7 +234,7 @@ extends CommandLineJobRunner with Logging {
         cl = rx.replaceFirstIn(cl, "'$1' '\\$(node.cores)'")
       }
 
-      val hap =        """.*'-T' '(HaplotypeCaller|RealignerTargetCreator)'.*""".r
+      val hap =        """.*'-T' '(HaplotypeCaller|RealignerTargetCreator|SelectVariants|VariantFiltration|CombineVariants)'.*""".r
       val indel =      """.*'-T' 'IndelRealigner'.*""".r
       val cat =        """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
       val mergesam =   """.*'picard.sam.MergeSamFiles'.*""".r
@@ -244,7 +244,8 @@ extends CommandLineJobRunner with Logging {
 
       cl match {
         case hap(_) => {
-          // HaplotypeCaller and RealignerTargetCreator support
+          // HaplotypeCaller, RealignerTargetCreator, SelectVariants,
+          // VariantFiltration, CombineVariants support
           cl = adjustOutput(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
@@ -274,7 +275,7 @@ extends CommandLineJobRunner with Logging {
           vwdpdh = vwdpdh2
         }
         case _ => {
-          throw new QException("Did not recognize tool command line, supports HaplotypeCaller, RealignerTargetCreator, IndelRealigner, GenotypeGVCFs, CatVariants, MergeSamFiles.")
+          throw new QException("Did not recognize tool command line, supports HaplotypeCaller, RealignerTargetCreator, IndelRealigner, GenotypeGVCFs, CatVariants, MergeSamFiles, SelectVariants, VariantFiltration, CombineVariants.")
         }
       }
 
