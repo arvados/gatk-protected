@@ -133,30 +133,31 @@ extends CommandLineJobRunner with Logging {
     }
   }
 
-  def adjustCatVcf(cl: String) = {
-    val rx = """'-V' '[^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)'""".r
+  def adjustVCF(cl: String) = {
+    val rx = """'-V' '([^']+)'""".r
+    val sgrx =  """.*/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)""".r
+    val keeprx = """/keep/.+""".r
+
     var cl2 = cl
-    for (rx(work, file) <- rx findAllIn cl) {
-      jobs.get(work) match {
-        case Some(d) => {
-          cl2 = rx.replaceFirstIn(cl2, "'-V' '/keep/" + d + "/" + file + "'")
+    for (rx(file) <- rx findAllIn cl) {
+      var found = "'-V' '" + file + "'"
+      file match {
+        case sgrx(work, fn) => {
+          jobs.get(work) match {
+            case Some(d) => {
+              cl2 = cl2.replaceFirst(found, "'-V' '/keep/" + d + "/" + file + "'")
+            }
+            case None => { }
+          }
         }
-        case None => { }
+        case keeprx() => { }
+        case _ => {
+          var target = Files.readSymbolicLink(Paths.get(file))
+          cl2 = cl2.replaceFirst(found, "'-V' '" + target + "'")
+        }
       }
     }
     cl2
-  }
-
-  def adjustGenotypeGVCF(cl: String) = {
-    val rx = """'-V' '([^']+)'""".r
-    rx.findFirstMatchIn(cl) match {
-      case Some(m) => {
-          var dpath = Paths.get(m.group(1))
-          var target = Files.readSymbolicLink(dpath)
-          rx.replaceFirstIn(cl, "'-V' '" + target + "'")
-        }
-        case None => cl
-    }
   }
 
   def adjustMergeSamInput(cl: String) = {
@@ -215,11 +216,11 @@ extends CommandLineJobRunner with Logging {
         cl = rx.replaceFirstIn(cl, "'$1' '\\$(node.cores)'")
       }
 
-      val hap =        """.*'-T' '(HaplotypeCaller|RealignerTargetCreator|SelectVariants|VariantFiltration|CombineVariants)'.*""".r
+      val hap =        """.*'-T' '(HaplotypeCaller|RealignerTargetCreator)'.*""".r
       val indel =      """.*'-T' 'IndelRealigner'.*""".r
       val cat =        """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
       val mergesam =   """.*'picard.sam.MergeSamFiles'.*""".r
-      val genotype =   """.*'-T' 'GenotypeGVCFs'.*""".r
+      val variants =   """.*'-T' '(GenotypeGVCFs|SelectVariants|VariantFiltration|CombineVariants)'.*""".r
 
       var vwdpdh: Option[String] = None
 
@@ -227,8 +228,7 @@ extends CommandLineJobRunner with Logging {
 
       cl match {
         case hap(_) => {
-          // HaplotypeCaller, RealignerTargetCreator, SelectVariants,
-          // VariantFiltration, CombineVariants support
+          // HaplotypeCaller, RealignerTargetCreator
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
           vwdpdh = vwdpdh2
@@ -241,13 +241,13 @@ extends CommandLineJobRunner with Logging {
         }
         case cat() => {
           // CatVariants support
-          cl = adjustCatVcf(cl)
+          cl = adjustVCF(cl)
         }
         case mergesam() => {
           cl = adjustMergeSamInput(cl)
         }
-        case genotype() => {
-          cl = adjustGenotypeGVCF(cl)
+        case variants(_) => {
+          cl = adjustVCF(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
           vwdpdh = vwdpdh2
