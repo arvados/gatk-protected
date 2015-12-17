@@ -61,15 +61,23 @@ extends CommandLineJobRunner with Logging {
 
   def adjustOutput(cl: String) = {
     // Capture and adjust output path
-    val rx = """'-o' '([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))'""".r
-    rx.findFirstMatchIn(cl) match {
-      case Some(m) => {
-        outfilePath = m.group(1)
-        workdir = m.group(2)
-        outfileName = m.group(3)
-        rx.replaceFirstIn(cl, "'-o' '$3'")
+    val rx  = """(.*)('-o' ')([^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+))('.*)""".r
+    val rx2 = """(.*)('-o' '|'-out' '|'OUTPUT=)([^']+/([^/']+))('.*)""".r
+
+    cl match {
+      case rx(head, param, path, dir, file, tail) => {
+        outfilePath = path
+        workdir = dir
+        outfileName = file
+        head + param + file + tail
       }
-      case None => cl
+      case rx2(head, param, path, file, tail) => {
+        outfilePath = path
+        workdir = ""
+        outfileName = file
+        head + param + file + tail
+      }
+      case _ => cl
     }
   }
 
@@ -125,20 +133,6 @@ extends CommandLineJobRunner with Logging {
     }
   }
 
-  def adjustCatVariantsOutput(cl: String) = {
-    // Capture and adjust output path
-    val rx = """'-out' '([^']+/([^/']+))'""".r
-    rx.findFirstMatchIn(cl) match {
-      case Some(m) => {
-        outfilePath = m.group(1)
-        workdir = ""
-        outfileName = m.group(2)
-        rx.replaceFirstIn(cl, "'-out' '$2'")
-      }
-      case None => cl
-    }
-  }
-
   def adjustCatVcf(cl: String) = {
     val rx = """'-V' '[^']+/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)'""".r
     var cl2 = cl
@@ -177,19 +171,6 @@ extends CommandLineJobRunner with Logging {
       }
     }
     cl2
-  }
-
-  def adjustMergeSamOutput(cl: String) = {
-    val rx = """'OUTPUT=([^']+/([^/']+))'""".r
-    rx.findFirstMatchIn(cl) match {
-      case Some(m) => {
-        outfilePath = m.group(1)
-        workdir = m.group(2)
-        outfileName = m.group(2)
-        rx.replaceFirstIn(cl, "'OUTPUT=$2'")
-      }
-      case None => cl
-    }
   }
 
   def start() {
@@ -242,17 +223,17 @@ extends CommandLineJobRunner with Logging {
 
       var vwdpdh: Option[String] = None
 
+      cl = adjustOutput(cl)
+
       cl match {
         case hap(_) => {
           // HaplotypeCaller, RealignerTargetCreator, SelectVariants,
           // VariantFiltration, CombineVariants support
-          cl = adjustOutput(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
           vwdpdh = vwdpdh2
         }
         case indel() => {
-          cl = adjustOutput(cl)
           cl = adjustTargetIntervals(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
@@ -260,15 +241,12 @@ extends CommandLineJobRunner with Logging {
         }
         case cat() => {
           // CatVariants support
-          cl = adjustCatVariantsOutput(cl)
           cl = adjustCatVcf(cl)
         }
         case mergesam() => {
           cl = adjustMergeSamInput(cl)
-          cl = adjustMergeSamOutput(cl)
         }
         case genotype() => {
-          cl = adjustOutput(cl)
           cl = adjustGenotypeGVCF(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
