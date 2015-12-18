@@ -135,7 +135,7 @@ extends CommandLineJobRunner with Logging {
 
   def adjustVCF(cl: String) = {
     val rx = """'-V' '([^']+)'""".r
-    val sgrx =  """.*/\.queue/scatterGather/([^/]+/[^/]+)/([^']+)""".r
+    val sgrx =  """.*/\.queue/scatterGather/([^/]+/[^/]+)/(.+)""".r
     val keeprx = """/keep/.+""".r
 
     var cl2 = cl
@@ -145,7 +145,7 @@ extends CommandLineJobRunner with Logging {
         case sgrx(work, fn) => {
           jobs.get(work) match {
             case Some(d) => {
-              cl2 = cl2.replaceFirst(found, "'-V' '/keep/" + d + "/" + file + "'")
+              cl2 = cl2.replaceFirst(found, "'-V' '/keep/" + d + "/" + fn + "'")
             }
             case None => { }
           }
