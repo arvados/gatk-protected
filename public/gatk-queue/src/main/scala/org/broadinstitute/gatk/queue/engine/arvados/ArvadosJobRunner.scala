@@ -186,14 +186,8 @@ extends CommandLineJobRunner with Logging {
       body.put("script_version", jobRecord.get("script_version"))
       body.put("repository", jobRecord.get("repository"))
 
-      val runtime = new HashMap[String, Object]()
       val rc = jobRecord.get("runtime_constraints").asInstanceOf[Map[String,Object]]
-      if (rc.containsKey("docker_image")) {
-        runtime.put("docker_image", rc.get("docker_image"))
-      }
-      if (rc.containsKey("arvados_sdk_version")) {
-        runtime.put("arvados_sdk_version", rc.get("arvados_sdk_version"))
-      }
+      val runtime = new HashMap[String, Object](rc)
       runtime.put("max_tasks_per_node", 1:java.lang.Integer)
       body.put("runtime_constraints", runtime)
 
