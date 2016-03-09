@@ -43,6 +43,7 @@ import org.broadinstitute.gatk.utils.runtime.{ProcessSettings, OutputStreamSetti
 import java.io
 import java.nio.charset.Charset
 import java.io.PrintWriter
+import scala.collection.JavaConversions._
 
 /**
  * Runs jobs using Arvados.
@@ -186,11 +187,6 @@ extends CommandLineJobRunner with Logging {
       body.put("script_version", jobRecord.get("script_version"))
       body.put("repository", jobRecord.get("repository"))
 
-      val rc = jobRecord.get("runtime_constraints").asInstanceOf[Map[String,Object]]
-      val runtime = new HashMap[String, Object](rc)
-      runtime.put("max_tasks_per_node", 1:java.lang.Integer)
-      body.put("runtime_constraints", runtime)
-
       var cl = function.commandLine
 
       {
@@ -211,45 +207,68 @@ extends CommandLineJobRunner with Logging {
       }
 
       val hap =        """.*'-T' '(HaplotypeCaller|RealignerTargetCreator)'.*""".r
-      val indel =      """.*'-T' 'IndelRealigner'.*""".r
-      val cat =        """.*'org.broadinstitute.gatk.tools.CatVariants'.*""".r
-      val mergesam =   """.*'picard.sam.MergeSamFiles'.*""".r
+      val indel =      """.*'-T' '(IndelRealigner)'.*""".r
+      val cat =        """.*'org.broadinstitute.gatk.tools.(CatVariants)'.*""".r
+      val mergesam =   """.*'picard.sam.(MergeSamFiles)'.*""".r
       val variants =   """.*'-T' '(GenotypeGVCFs|SelectVariants|VariantFiltration|CombineVariants)'.*""".r
 
       var vwdpdh: Option[String] = None
 
       cl = adjustOutput(cl)
 
-      cl match {
-        case hap(_) => {
+      val componentName: String = cl match {
+        case hap(cname) => {
           // HaplotypeCaller, RealignerTargetCreator
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
           vwdpdh = vwdpdh2
+          cname
         }
-        case indel() => {
+        case indel(cname) => {
           cl = adjustTargetIntervals(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
           vwdpdh = vwdpdh2
+          cname
         }
-        case cat() => {
+        case cat(cname) => {
           // CatVariants support
           cl = adjustVCF(cl)
+          cname
         }
-        case mergesam() => {
+        case mergesam(cname) => {
           cl = adjustMergeSamInput(cl)
+          cname
         }
-        case variants(_) => {
+        case variants(cname) => {
           cl = adjustVCF(cl)
           var (cl2, vwdpdh2) = adjustScatter(cl)
           cl = cl2
           vwdpdh = vwdpdh2
+          cname
         }
         case _ => {
           throw new QException("Did not recognize tool command line, supports HaplotypeCaller, RealignerTargetCreator, IndelRealigner, GenotypeGVCFs, CatVariants, MergeSamFiles, SelectVariants, VariantFiltration, CombineVariants.")
         }
       }
+
+      val queueConstraints = jobRecord.get("runtime_constraints").asInstanceOf[Map[String, Object]]
+      val runtime = new HashMap[String, Object]()
+      runtime.putAll(mapAsScalaMap(queueConstraints).filter {
+        case ("arvados_sdk_version", _) => true
+        case (key, _) => key.startsWith("docker_")
+      })
+      jobRecord.
+        get("script_parameters").asInstanceOf[Map[String, Object]].
+        get("runtime_constraints").asInstanceOf[Map[String, Object]].
+        get(componentName).asInstanceOf[Map[String, Object]] match {
+          case null =>
+            println("WARNING: No runtime constraints defined for " + componentName)
+          case childConstraints =>
+            runtime.putAll(childConstraints)
+        }
+      runtime.put("max_tasks_per_node", 1:java.lang.Integer)
+      body.put("runtime_constraints", runtime)
 
       val parameters = new HashMap[String, Object]()
       val cmdLine = new ArrayList[String]
